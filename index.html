@@ -22,23 +22,24 @@
             padding: 20px;
             gap: 30px;
         }
-        /* 视频容器（用于加载编码后的流，触发PiP） */
+        /* 视频容器（适配iOS Safari视频样式） */
         .video-container {
             width: 100%;
-            max-width: 300px; /* 适配移动端+桌面端 */
-            height: 180px;
+            max-width: 300px;
+            height: 200px;
             border-radius: 16px;
             overflow: hidden;
-            border: 1px solid #00e5ff;
-            box-shadow: 0 0 25px rgba(0, 229, 255, 0.6);
+            border: 2px solid #ffcc00;
+            box-shadow: 0 0 30px rgba(255, 204, 0, 0.5);
+            background-color: #000;
         }
         #pipVideo {
             width: 100%;
             height: 100%;
             object-fit: cover;
-            background-color: #1a1a1a;
+            display: block;
         }
-        /* 按钮组：适配移动端触摸+桌面端点击 */
+        /* 按钮（适配iOS触摸） */
         .btn-group {
             display: flex;
             gap: 15px;
@@ -46,22 +47,22 @@
             justify-content: center;
         }
         .control-btn {
-            padding: 12px 24px;
-            font-size: 1rem;
+            padding: 14px 28px;
+            font-size: 1.1rem;
             font-weight: 600;
             color: #1a1a1a;
-            background-color: #00e5ff;
+            background-color: #ffcc00;
             border: none;
-            border-radius: 8px;
+            border-radius: 12px;
             cursor: pointer;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(0, 229, 255, 0.4);
-            touch-action: manipulation; /* 优化移动端触摸 */
+            box-shadow: 0 4px 18px rgba(255, 204, 0, 0.6);
+            touch-action: manipulation;
         }
-        .control-btn:hover {
-            background-color: #00c8e6;
+        .control-btn:hover, .control-btn:active {
+            background-color: #ffb800;
             transform: scale(1.05);
-            box-shadow: 0 6px 20px rgba(0, 229, 255, 0.6);
+            box-shadow: 0 6px 22px rgba(255, 204, 0, 0.8);
         }
         .control-btn:disabled {
             background-color: #666;
@@ -70,266 +71,168 @@
             transform: none;
             box-shadow: none;
         }
-        /* 兼容性提示 */
+        /* 提示文本（iOS专属指引） */
         .support-tip {
             position: fixed;
             bottom: 20px;
             font-size: 0.9rem;
-            color: rgba(255, 255, 255, 0.7);
+            color: rgba(255, 255, 255, 0.8);
             text-align: center;
             max-width: 90%;
-            line-height: 1.5;
+            line-height: 1.6;
         }
-        /* 隐藏Canvas（仅用于绘制，不显示） */
-        #dynamicCanvas {
+        /* 隐藏Canvas（仅绘制用） */
+        #countdownCanvas {
             display: none;
         }
     </style>
 </head>
 <body>
-    <!-- Canvas：实时绘制数字滚动（隐藏，仅用于编码） -->
-    <canvas id="dynamicCanvas" width="300" height="180"></canvas>
+    <!-- Canvas：实时绘制倒计时（无编码，直接流注入视频） -->
+    <canvas id="countdownCanvas" width="300" height="200"></canvas>
 
-    <!-- 视频容器：加载编码后的视频流，用于触发PiP -->
+    <!-- 视频容器：iOS Safari识别为视频，支持PiP -->
     <div class="video-container">
         <video id="pipVideo" controls playsinline muted loop></video>
     </div>
 
-    <!-- 按钮组：开启编码、触发PiP、退出PiP -->
+    <!-- 功能按钮 -->
     <div class="btn-group">
-        <button class="control-btn" id="startEncodeBtn">开启实时编码</button>
-        <button class="control-btn" id="togglePipBtn" disabled>切换画中画</button>
+        <button class="control-btn" id="startBtn">开始10秒倒计时</button>
+        <button class="control-btn" id="pipBtn" disabled>切换画中画</button>
     </div>
 
-    <!-- 兼容性提示 -->
-    <div class="support-tip" id="supportTip">
-        提示：请使用最新版Chrome/Edge/Safari浏览器，需HTTPS环境（本地测试可使用localhost）
+    <!-- iOS Safari专属提示 -->
+    <div class="support-tip">
+        iOS Safari设置：设置 → Safari → 请求 → 开启「画中画」| 需点击按钮触发，支持全程PiP
     </div>
 
     <script>
-        // ========== 全局变量定义 ==========
-        const canvas = document.getElementById('dynamicCanvas');
+        // 核心变量（简化逻辑，适配iOS Safari）
+        const canvas = document.getElementById('countdownCanvas');
         const ctx = canvas.getContext('2d');
         const video = document.getElementById('pipVideo');
-        const startEncodeBtn = document.getElementById('startEncodeBtn');
-        const togglePipBtn = document.getElementById('togglePipBtn');
-        const supportTip = document.getElementById('supportTip');
+        const startBtn = document.getElementById('startBtn');
+        const pipBtn = document.getElementById('pipBtn');
 
-        let count = 0; // 数字滚动索引
-        let mediaRecorder = null; // 媒体录制器实例
-        let videoChunks = []; // 存储视频片段
-        let isEncoding = false; // 是否正在编码
-        let blobUrl = ''; // 视频Blob URL
+        let countdown = 10; // 初始倒计时10秒
+        let timer = null; // 倒计时定时器
+        let isCounting = false; // 是否正在倒计时
+        let canvasStream = null; // Canvas实时流
 
-        // ========== 第一步：跨平台兼容性检测 ==========
-        const compatibilityCheck = () => {
-            let supportStatus = true;
-            let tipText = '';
-
-            // 检测Canvas captureStream
-            if (!canvas.captureStream) {
-                supportStatus = false;
-                tipText += '当前浏览器不支持Canvas媒体流捕获；';
+        // ========== 1. 初始化：Canvas流注入视频（iOS Safari兼容） ==========
+        function initCanvasStream() {
+            try {
+                // Canvas生成实时流（30帧/秒，iOS Safari支持）
+                canvasStream = canvas.captureStream(30);
+                // 直接将流作为视频源（无需编码，简化逻辑）
+                video.srcObject = canvasStream;
+                // 预加载视频（避免点击后延迟）
+                video.load();
+            } catch (err) {
+                alert('初始化失败：' + err.message + '，请更新Safari至最新版本');
+                startBtn.disabled = true;
             }
+        }
 
-            // 检测MediaRecorder
-            if (!window.MediaRecorder) {
-                supportStatus = false;
-                tipText += '当前浏览器不支持MediaRecorder实时编码；';
-            }
-
-            // 检测视频PiP
-            if (!('requestPictureInPicture' in HTMLVideoElement.prototype)) {
-                supportStatus = false;
-                tipText += '当前浏览器不支持视频画中画功能；';
-            }
-
-            // 移动端特殊提示
-            if (/Android|iOS/.test(navigator.userAgent)) {
-                tipText += ' 移动端请确保开启浏览器画中画权限（iOS：Safari设置→请求→画中画；安卓：Chrome设置→站点设置→画中画）；';
-            }
-
-            // 更新提示和按钮状态
-            if (!supportStatus) {
-                startEncodeBtn.disabled = true;
-                togglePipBtn.disabled = true;
-                supportTip.style.color = '#ff6b6b';
-                supportTip.textContent = tipText || '当前浏览器不支持该功能，请更新至最新版本';
-            } else {
-                supportTip.textContent = '已通过兼容性检测，点击「开启实时编码」开始使用（需用户交互触发）';
-            }
-
-            return supportStatus;
-        };
-
-        // 初始化兼容性检测
-        const isSupported = compatibilityCheck();
-
-        // ========== 第二步：Canvas实时绘制12345数字滚动 ==========
-        function drawDynamicNumber() {
+        // ========== 2. Canvas绘制倒计时（实时更新） ==========
+        function drawCountdown() {
             // 清空画布
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // 绘制背景
-            ctx.fillStyle = '#1a1a1a';
+            // 绘制背景（黑色+金色边框）
+            ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#ffcc00';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
 
-            // 绘制滚动数字
-            const baseNum = '12345';
-            const rollNum = baseNum.slice(count % 5) + baseNum.repeat(3).slice(0, 10 - baseNum.slice(count % 5).length);
-            ctx.font = '36px bold';
-            ctx.fillStyle = '#00e5ff';
+            // 绘制倒计时文本
+            ctx.font = '72px bold';
+            ctx.fillStyle = '#ffcc00';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.shadowColor = '#00e5ff';
-            ctx.shadowBlur = 10;
-            ctx.fillText(rollNum, canvas.width / 2, canvas.height / 2);
-            ctx.shadowBlur = 0; // 关闭阴影，避免性能损耗
+            ctx.shadowColor = '#ffcc00';
+            ctx.shadowBlur = 15;
 
-            count++;
-            requestAnimationFrame(drawDynamicNumber); // 循环绘制，保证流畅
-        }
-
-        // 启动数字绘制
-        drawDynamicNumber();
-
-        // ========== 第三步：实时编码Canvas为视频流 ==========
-        function startRealTimeEncode() {
-            if (isEncoding) return;
-
-            // 获取Canvas媒体流
-            const canvasStream = canvas.captureStream(30); // 30帧/秒，平衡流畅度和性能
-
-            // 选择跨平台兼容的编码格式（优先MP4，不支持则用WebM）
-            let mimeType = '';
-            if (MediaRecorder.isTypeSupported('video/mp4; codecs=h264')) {
-                mimeType = 'video/mp4; codecs=h264'; // 安卓/iOS/桌面端通用
-            } else if (MediaRecorder.isTypeSupported('video/webm; codecs=vp9')) {
-                mimeType = 'video/webm; codecs=vp9'; // 备选，桌面端/安卓新版支持
+            if (countdown > 0) {
+                ctx.fillText(countdown, canvas.width / 2, canvas.height / 2);
             } else {
-                alert('当前浏览器不支持兼容的视频编码格式');
-                return;
+                // 倒计时结束后显示文本
+                ctx.font = '36px bold';
+                ctx.fillText('结束!', canvas.width / 2, canvas.height / 2);
             }
 
-            // 创建MediaRecorder实例
-            mediaRecorder = new MediaRecorder(canvasStream, { mimeType });
-
-            // 收集视频片段
-            mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) {
-                    videoChunks.push(e.data);
-                }
-            };
-
-            // 编码停止时，生成视频Blob并注入Video标签
-            mediaRecorder.onstop = () => {
-                // 生成视频Blob
-                const videoBlob = new Blob(videoChunks, { type: mimeType });
-                // 释放旧的Blob URL，避免内存泄漏
-                if (blobUrl) {
-                    URL.revokeObjectURL(blobUrl);
-                }
-                // 创建新的Blob URL
-                blobUrl = URL.createObjectURL(videoBlob);
-                // 注入Video标签并播放
-                video.src = blobUrl;
-                video.play().then(() => {
-                    togglePipBtn.disabled = false; // 视频播放后，启用PiP按钮
-                }).catch(err => {
-                    console.error('视频播放失败：', err);
-                    alert('视频播放失败，请重试');
-                });
-
-                // 重置视频片段数组
-                videoChunks = [];
-            };
-
-            // 启动编码（100ms分段，保证实时性）
-            mediaRecorder.start(100);
-            isEncoding = true;
-            startEncodeBtn.textContent = '停止实时编码';
-            supportTip.textContent = '实时编码中，视频已加载，可点击「切换画中画」触发悬浮';
+            ctx.shadowBlur = 0;
         }
 
-        // 停止实时编码
-        function stopRealTimeEncode() {
-            if (!isEncoding || !mediaRecorder) return;
+        // ========== 3. 开始/重置倒计时 ==========
+        function startCountdown() {
+            if (isCounting) return;
 
-            mediaRecorder.stop();
-            isEncoding = false;
-            startEncodeBtn.textContent = '开启实时编码';
-            togglePipBtn.disabled = true; // 停止编码后，禁用PiP按钮
-            supportTip.textContent = '已停止实时编码，可重新开启';
+            // 重置倒计时
+            countdown = 10;
+            isCounting = true;
+            startBtn.textContent = '重置倒计时';
+            pipBtn.disabled = false; // 允许触发PiP
+
+            // 启动定时器（1秒/次）
+            timer = setInterval(() => {
+                countdown--;
+                drawCountdown(); // 实时更新画布
+
+                // 倒计时结束
+                if (countdown <= 0) {
+                    clearInterval(timer);
+                    isCounting = false;
+                    startBtn.textContent = '重新开始';
+                    drawCountdown(); // 绘制结束文本
+                }
+            }, 1000);
+
+            // 启动视频播放（iOS Safari需用户触发）
+            video.play().then(() => {
+                drawCountdown(); // 播放后立即绘制初始倒计时
+            }).catch(err => {
+                alert('视频播放失败：' + err.message + '，请点击视频播放按钮后再试');
+            });
         }
 
-        // ========== 第四步：跨平台视频PiP切换 ==========
-        async function togglePictureInPicture() {
+        // ========== 4. 画中画切换（iOS Safari原生支持） ==========
+        async function togglePiP() {
             try {
-                // 已开启PiP：退出
                 if (document.pictureInPictureElement) {
+                    // 退出PiP
                     await document.exitPictureInPicture();
-                    togglePipBtn.textContent = '切换画中画';
+                    pipBtn.textContent = '切换画中画';
                 } else {
-                    // 未开启PiP：先确保视频在播放，再触发
-                    if (video.paused) {
-                        await video.play();
-                    }
+                    // 进入PiP（确保视频在播放）
+                    if (video.paused) await video.play();
                     await video.requestPictureInPicture();
-                    togglePipBtn.textContent = '退出画中画';
+                    pipBtn.textContent = '退出画中画';
                 }
             } catch (err) {
-                console.error('PiP操作失败：', err);
-                alert(`画中画操作失败：${err.message}\n请检查浏览器权限或视频播放状态`);
+                alert('画中画操作失败：' + err.message + '，请检查Safari画中画权限');
             }
         }
 
-        // ========== 第五步：按钮事件绑定 ==========
-        // 开启/停止编码按钮
-        startEncodeBtn.addEventListener('click', () => {
-            if (!isSupported) return;
-            isEncoding ? stopRealTimeEncode() : startRealTimeEncode();
+        // ========== 5. 按钮事件（适配iOS触摸） ==========
+        startBtn.addEventListener('click', startCountdown);
+        pipBtn.addEventListener('click', togglePiP);
+
+        // ========== 6. 页面加载初始化 ==========
+        window.addEventListener('load', () => {
+            initCanvasStream();
+            // 初始绘制画布背景
+            drawCountdown();
         });
 
-        // PiP切换按钮
-        togglePipBtn.addEventListener('click', togglePictureInPicture);
-
-        // ========== 第六步：页面销毁时清理资源 ==========
+        // ========== 7. 页面销毁清理 ==========
         window.addEventListener('beforeunload', () => {
-            // 停止编码
-            if (mediaRecorder && isEncoding) {
-                mediaRecorder.stop();
-            }
-            // 释放Blob URL
-            if (blobUrl) {
-                URL.revokeObjectURL(blobUrl);
-            }
-            // 退出PiP
-            if (document.pictureInPictureElement) {
-                document.exitPictureInPicture().catch(() => {});
-            }
-            // 暂停视频
-            if (!video.paused) {
-                video.pause();
-            }
+            if (timer) clearInterval(timer);
+            if (canvasStream) canvasStream.getTracks().forEach(track => track.stop());
+            if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
         });
-
-        // ========== 移动端额外适配：触摸事件优化 ==========
-        if (/Android|iOS/.test(navigator.userAgent)) {
-            // 阻止移动端双击缩放
-            document.addEventListener('dblclick', (e) => {
-                e.preventDefault();
-            });
-            // 优化按钮触摸反馈
-            const btns = document.querySelectorAll('.control-btn');
-            btns.forEach(btn => {
-                btn.addEventListener('touchstart', () => {
-                    btn.style.opacity = '0.8';
-                });
-                btn.addEventListener('touchend', () => {
-                    btn.style.opacity = '1';
-                });
-            });
-        }
     </script>
 </body>
 </html>
